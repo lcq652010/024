@@ -51,8 +51,13 @@ const router = createRouter({
 })
 
 router.beforeEach((to, from, next) => {
-  const isLoggedIn = localStorage.getItem('admin')
+  const token = localStorage.getItem('token')
+  const admin = localStorage.getItem('admin')
+  const isLoggedIn = token && admin
+  
   if (to.path !== '/login' && !isLoggedIn) {
+    localStorage.removeItem('token')
+    localStorage.removeItem('admin')
     next('/login')
   } else if (to.path === '/login' && isLoggedIn) {
     next('/employees')

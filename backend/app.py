@@ -2,17 +2,83 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from functools import wraps
 import calendar
+import jwt
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///attendance.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'your_secret_key_here'
+app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key_2024'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+
+STANDARD_CHECK_IN_TIME = (9, 0)
+STANDARD_CHECK_OUT_TIME = (18, 0)
 
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 CORS(app)
+
+
+def calculate_attendance_status(check_in_time, check_out_time):
+    status = '正常'
+    if check_in_time:
+        check_in_hour = check_in_time.hour
+        check_in_minute = check_in_time.minute
+        if check_in_hour > STANDARD_CHECK_IN_TIME[0] or \
+           (check_in_hour == STANDARD_CHECK_IN_TIME[0] and check_in_minute > STANDARD_CHECK_IN_TIME[1]):
+            status = '迟到'
+    
+    if check_out_time:
+        check_out_hour = check_out_time.hour
+        check_out_minute = check_out_time.minute
+        if check_out_hour < STANDARD_CHECK_OUT_TIME[0] or \
+           (check_out_hour == STANDARD_CHECK_OUT_TIME[0] and check_out_minute < STANDARD_CHECK_OUT_TIME[1]):
+            if status == '迟到':
+                status = '迟到早退'
+            else:
+                status = '早退'
+    
+    return status
+
+
+def generate_token(admin_id, username):
+    payload = {
+        'admin_id': admin_id,
+        'username': username,
+        'exp': datetime.utcnow() + app.config['JWT_ACCESS_TOKEN_EXPIRES']
+    }
+    token = jwt.encode(payload, app.config['JWT_SECRET_KEY'], algorithm='HS256')
+    return token
+
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+        
+        if not token:
+            return jsonify({'success': False, 'message': 'Token 缺失，请先登录'}), 401
+        
+        try:
+            data = jwt.decode(token, app.config['JWT_SECRET_KEY'], algorithms=['HS256'])
+            current_admin = {
+                'admin_id': data['admin_id'],
+                'username': data['username']
+            }
+        except jwt.ExpiredSignatureError:
+            return jsonify({'success': False, 'message': 'Token 已过期，请重新登录'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'success': False, 'message': 'Token 无效'}), 401
+        
+        return f(current_admin, *args, **kwargs)
+    return decorated
 
 
 class Admin(db.Model):
@@ -51,12 +117,25 @@ def login():
     admin = Admin.query.filter_by(username=username).first()
     
     if admin and bcrypt.check_password_hash(admin.password, password):
-        return jsonify({'success': True, 'message': '登录成功', 'admin': {'id': admin.id, 'username': admin.username}})
+        token = generate_token(admin.id, admin.username)
+        return jsonify({
+            'success': True, 
+            'message': '登录成功', 
+            'token': token,
+            'admin': {'id': admin.id, 'username': admin.username}
+        })
     return jsonify({'success': False, 'message': '用户名或密码错误'}), 401
 
 
+@app.route('/api/check-token', methods=['GET'])
+@token_required
+def check_token(current_admin):
+    return jsonify({'success': True, 'admin': current_admin})
+
+
 @app.route('/api/employees', methods=['GET'])
-def get_employees():
+@token_required
+def get_employees(current_admin):
     employees = Employee.query.all()
     result = []
     for emp in employees:
@@ -73,7 +152,8 @@ def get_employees():
 
 
 @app.route('/api/employees', methods=['POST'])
-def create_employee():
+@token_required
+def create_employee(current_admin):
     data = request.json
     join_date = datetime.strptime(data.get('join_date'), '%Y-%m-%d').date()
     
@@ -93,7 +173,8 @@ def create_employee():
 
 
 @app.route('/api/employees/<int:employee_id>', methods=['GET'])
-def get_employee(employee_id):
+@token_required
+def get_employee(current_admin, employee_id):
     employee = Employee.query.get_or_404(employee_id)
     return jsonify({
         'id': employee.id,
@@ -107,7 +188,8 @@ def get_employee(employee_id):
 
 
 @app.route('/api/employees/<int:employee_id>', methods=['PUT'])
-def update_employee(employee_id):
+@token_required
+def update_employee(current_admin, employee_id):
     employee = Employee.query.get_or_404(employee_id)
     data = request.json
     
@@ -125,7 +207,8 @@ def update_employee(employee_id):
 
 
 @app.route('/api/employees/<int:employee_id>', methods=['DELETE'])
-def delete_employee(employee_id):
+@token_required
+def delete_employee(current_admin, employee_id):
     employee = Employee.query.get_or_404(employee_id)
     
     Attendance.query.filter_by(employee_id=employee_id).delete()
@@ -136,40 +219,57 @@ def delete_employee(employee_id):
 
 
 @app.route('/api/attendance/checkin', methods=['POST'])
-def check_in():
+@token_required
+def check_in(current_admin):
     data = request.json
     employee_id = data.get('employee_id')
     employee = Employee.query.get_or_404(employee_id)
     
     today = date.today()
     existing_attendance = Attendance.query.filter_by(employee_id=employee_id, date=today).first()
+    current_time = datetime.now().time()
     
     if existing_attendance:
         if existing_attendance.check_in:
             return jsonify({'success': False, 'message': '今日已打卡'}), 400
         else:
-            existing_attendance.check_in = datetime.now().time()
+            existing_attendance.check_in = current_time
+            existing_attendance.status = calculate_attendance_status(current_time, existing_attendance.check_out)
             db.session.commit()
-            return jsonify({'success': True, 'message': '签到成功', 'check_in': existing_attendance.check_in.isoformat()})
+            return jsonify({
+                'success': True, 
+                'message': '签到成功', 
+                'check_in': existing_attendance.check_in.isoformat(),
+                'status': existing_attendance.status
+            })
     else:
+        status = calculate_attendance_status(current_time, None)
         new_attendance = Attendance(
             employee_id=employee_id,
             date=today,
-            check_in=datetime.now().time()
+            check_in=current_time,
+            status=status
         )
         db.session.add(new_attendance)
         db.session.commit()
-        return jsonify({'success': True, 'message': '签到成功', 'check_in': new_attendance.check_in.isoformat()})
+        return jsonify({
+            'success': True, 
+            'message': '签到成功', 
+            'check_in': new_attendance.check_in.isoformat(),
+            'status': new_attendance.status
+        })
 
 
 @app.route('/api/attendance/checkout', methods=['POST'])
-def check_out():
+@token_required
+def check_out(current_admin):
     data = request.json
     employee_id = data.get('employee_id')
     employee = Employee.query.get_or_404(employee_id)
     
     today = date.today()
     attendance = Attendance.query.filter_by(employee_id=employee_id, date=today).first()
+    current_time = datetime.now().time()
     
     if not attendance or not attendance.check_in:
         return jsonify({'success': False, 'message': '今日未签到，无法签退'}), 400
@@ -177,21 +277,34 @@ def check_out():
     if attendance.check_out:
         return jsonify({'success': False, 'message': '今日已签退'}), 400
     
-    attendance.check_out = datetime.now().time()
+    attendance.check_out = current_time
+    attendance.status = calculate_attendance_status(attendance.check_in, current_time)
     db.session.commit()
-    return jsonify({'success': True, 'message': '签退成功', 'check_out': attendance.check_out.isoformat()})
+    return jsonify({
+        'success': True, 
+        'message': '签退成功', 
+        'check_out': attendance.check_out.isoformat(),
+        'status': attendance.status
+    })
 
 
 @app.route('/api/attendance/records', methods=['GET'])
-def get_attendance_records():
+@token_required
+def get_attendance_records(current_admin):
     employee_id = request.args.get('employee_id', type=int)
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
+    page = request.args.get('page', type=int, default=1)
+    page_size = request.args.get('page_size', type=int, default=10)
+    status = request.args.get('status')
     
     query = Attendance.query
     
     if employee_id:
         query = query.filter_by(employee_id=employee_id)
+    
+    if status:
+        query = query.filter(Attendance.status == status)
     
     if start_date:
         start = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -201,7 +314,15 @@ def get_attendance_records():
         end = datetime.strptime(end_date, '%Y-%m-%d').date()
         query = query.filter(Attendance.date <= end)
     
-    records = query.order_by(Attendance.date.desc()).all()
+    total = query.count()
+    
+    pagination = query.order_by(Attendance.date.desc()).paginate(
+        page=page, 
+        per_page=page_size, 
+        error_out=False
+    )
+    
+    records = pagination.items
     
     result = []
     for record in records:
@@ -215,11 +336,18 @@ def get_attendance_records():
             'status': record.status
         })
     
-    return jsonify(result)
+    return jsonify({
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': pagination.pages,
+        'data': result
+    })
 
 
 @app.route('/api/attendance/monthly-stats', methods=['GET'])
-def get_monthly_stats():
+@token_required
+def get_monthly_stats(current_admin):
     employee_id = request.args.get('employee_id', type=int)
     year = request.args.get('year', type=int, default=date.today().year)
     month = request.args.get('month', type=int, default=date.today().month)
@@ -240,6 +368,22 @@ def get_monthly_stats():
     
     if employee_id:
         employee = Employee.query.get(employee_id)
+        
+        normal_count = 0
+        late_count = 0
+        early_count = 0
+        late_early_count = 0
+        
+        for record in attendances:
+            if record.status == '正常':
+                normal_count += 1
+            elif record.status == '迟到':
+                late_count += 1
+            elif record.status == '早退':
+                early_count += 1
+            elif record.status == '迟到早退':
+                late_early_count += 1
+        
         stats = {
             'employee_id': employee_id,
             'employee_name': employee.name if employee else '未知',
@@ -247,6 +391,10 @@ def get_monthly_stats():
             'month': month,
             'total_days': num_days,
             'attendance_days': len(set(a.date for a in attendances if a.check_in)),
+            'normal_count': normal_count,
+            'late_count': late_count,
+            'early_count': early_count,
+            'late_early_count': late_early_count,
             'records': []
         }
         
@@ -265,10 +413,31 @@ def get_monthly_stats():
         
         for emp in employees:
             emp_attendances = [a for a in attendances if a.employee_id == emp.id]
+            
+            normal_count = 0
+            late_count = 0
+            early_count = 0
+            late_early_count = 0
+            
+            for record in emp_attendances:
+                if record.status == '正常':
+                    normal_count += 1
+                elif record.status == '迟到':
+                    late_count += 1
+                elif record.status == '早退':
+                    early_count += 1
+                elif record.status == '迟到早退':
+                    late_early_count += 1
+            
             all_stats.append({
                 'employee_id': emp.id,
                 'employee_name': emp.name,
-                'attendance_days': len(set(a.date for a in emp_attendances if a.check_in))
+                'department': emp.department,
+                'attendance_days': len(set(a.date for a in emp_attendances if a.check_in)),
+                'normal_count': normal_count,
+                'late_count': late_count,
+                'early_count': early_count,
+                'late_early_count': late_early_count
             })
         
         return jsonify({

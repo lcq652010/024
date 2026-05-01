@@ -22,7 +22,7 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const router = useRouter()
 const loginForm = reactive({
@@ -40,8 +40,9 @@ const loading = ref(false)
 const handleLogin = async () => {
   loading.value = true
   try {
-    const res = await axios.post('/api/login', loginForm)
+    const res = await request.post('/login', loginForm)
     if (res.data.success) {
+      localStorage.setItem('token', res.data.token)
       localStorage.setItem('admin', JSON.stringify(res.data.admin))
       ElMessage.success(res.data.message)
       router.push('/employees')
@@ -49,7 +50,9 @@ const handleLogin = async () => {
       ElMessage.error(res.data.message)
     }
   } catch (error) {
-    ElMessage.error('登录失败，请检查服务器是否启动')
+    if (error.response?.data?.message) {
+      ElMessage.error(error.response.data.message)
+    }
   } finally {
     loading.value = false
   }

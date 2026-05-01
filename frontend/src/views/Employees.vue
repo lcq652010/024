@@ -65,7 +65,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const employees = ref([])
 const dialogVisible = ref(false)
@@ -93,7 +93,7 @@ const rules = {
 
 const getEmployees = async () => {
   try {
-    const res = await axios.get('/api/employees')
+    const res = await request.get('/employees')
     employees.value = res.data
   } catch (error) {
     ElMessage.error('获取员工列表失败')
@@ -121,7 +121,7 @@ const handleDelete = (row) => {
     type: 'warning'
   }).then(async () => {
     try {
-      await axios.delete(`/api/employees/${row.id}`)
+      await request.delete(`/employees/${row.id}`)
       ElMessage.success('删除成功')
       getEmployees()
     } catch (error) {
@@ -137,10 +137,10 @@ const handleSubmit = async () => {
   loading.value = true
   try {
     if (isEdit.value) {
-      await axios.put(`/api/employees/${form.id}`, form)
+      await request.put(`/employees/${form.id}`, form)
       ElMessage.success('更新成功')
     } else {
-      await axios.post('/api/employees', form)
+      await request.post('/employees', form)
       ElMessage.success('添加成功')
     }
     dialogVisible.value = false

@@ -57,6 +57,7 @@ const admin = computed(() => {
 const activeMenu = computed(() => route.path)
 
 const handleLogout = () => {
+  localStorage.removeItem('token')
   localStorage.removeItem('admin')
   router.push('/login')
 }

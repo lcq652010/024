@@ -78,7 +78,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus, Minus } from '@element-plus/icons-vue'
-import axios from 'axios'
+import request from '../utils/request'
 
 const employees = ref([])
 const selectedEmployee = ref(null)
@@ -107,7 +107,7 @@ const updateTime = () => {
 
 const getEmployees = async () => {
   try {
-    const res = await axios.get('/api/employees')
+    const res = await request.get('/employees')
     employees.value = res.data
   } catch (error) {
     ElMessage.error('获取员工列表失败')
@@ -121,7 +121,7 @@ const getTodayRecord = async () => {
   }
   try {
     const today = new Date().toISOString().split('T')[0]
-    const res = await axios.get('/api/attendance/records', {
+    const res = await request.get('/attendance/records', {
       params: {
         employee_id: selectedEmployee.value,
         start_date: today,
@@ -137,7 +137,7 @@ const getTodayRecord = async () => {
 const handleCheckIn = async () => {
   checkInLoading.value = true
   try {
-    const res = await axios.post('/api/attendance/checkin', {
+    const res = await request.post('/attendance/checkin', {
       employee_id: selectedEmployee.value
     })
     if (res.data.success) {
@@ -154,7 +154,7 @@ const handleCheckIn = async () => {
 const handleCheckOut = async () => {
   checkOutLoading.value = true
   try {
-    const res = await axios.post('/api/attendance/checkout', {
+    const res = await request.post('/attendance/checkout', {
       employee_id: selectedEmployee.value
     })
     if (res.data.success) {

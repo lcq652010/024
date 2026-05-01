@@ -8,6 +8,15 @@
         </div>
       </template>
 
+      <div class="quick-filters">
+        <el-radio-group v-model="quickFilter" @change="handleQuickFilter">
+          <el-radio-button label="today">今天</el-radio-button>
+          <el-radio-button label="week">本周</el-radio-button>
+          <el-radio-button label="month">本月</el-radio-button>
+          <el-radio-button label="custom">自定义</el-radio-button>
+        </el-radio-group>
+      </div>
+
       <div class="search-section">
         <el-form :inline="true" :model="searchForm">
           <el-form-item label="员工">
@@ -18,6 +27,14 @@
                 :label="`${emp.name} - ${emp.department}`"
                 :value="emp.id"
               />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="状态">
+            <el-select v-model="searchForm.status" placeholder="全部状态" clearable style="width: 150px">
+              <el-option label="正常" value="正常" />
+              <el-option label="迟到" value="迟到" />
+              <el-option label="早退" value="早退" />
+              <el-option label="迟到早退" value="迟到早退" />
             </el-select>
           </el-form-item>
           <el-form-item label="开始日期">
@@ -39,37 +56,41 @@
         </el-form>
       </div>
 
-      <el-table :data="records" border stripe v-loading="loading">
+      <el-table :data="tableData" border stripe v-loading="loading">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="employee_name" label="员工姓名" width="120" />
         <el-table-column prop="date" label="日期" width="120" />
         <el-table-column prop="check_in" label="签到时间" width="120">
           <template #default="scope">
-            <span :class="scope.row.check_in ? 'text-success' : 'text-warning'">
+            <span :class="scope.row.check_in ? 'text-success' : 'text-danger'">
               {{ scope.row.check_in || '--' }}
             </span>
           </template>
         </el-table-column>
         <el-table-column prop="check_out" label="签退时间" width="120">
           <template #default="scope">
-            <span :class="scope.row.check_out ? 'text-success' : 'text-warning'">
+            <span :class="scope.row.check_out ? 'text-success' : 'text-danger'">
               {{ scope.row.check_out || '--' }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="status" label="状态" width="120">
           <template #default="scope">
-            <el-tag :type="getStatusType(scope.row)">{{ getStatusText(scope.row) }}</el-tag>
+            <el-tag :type="getStatusType(scope.row.status)">{{ scope.row.status }}</el-tag>
           </template>
         </el-table-column>
       </el-table>
 
-      <div class="pagination-section" v-if="records.length > 0">
+      <div class="pagination-section" v-if="pagination.total > 0">
         <el-pagination
           background
-          layout="total, prev, pager, next"
-          :total="records.length"
-          :page-size="10"
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="pagination.total"
+          :page-size="pagination.page_size"
+          :page-sizes="[10, 20, 50, 100]"
+          :current-page="pagination.page"
+          @size-change="handleSizeChange"
+          @current-change="handleCurrentChange"
         />
       </div>
     </el-card>
@@ -79,31 +100,76 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import request from '../utils/request'
 
 const employees = ref([])
-const records = ref([])
+const tableData = ref([])
 const loading = ref(false)
+const quickFilter = ref('month')
+
+const pagination = reactive({
+  total: 0,
+  page: 1,
+  page_size: 10,
+  total_pages: 0
+})
 
 const searchForm = reactive({
   employee_id: null,
   start_date: '',
-  end_date: ''
+  end_date: '',
+  status: ''
 })
 
 const getEmployees = async () => {
   try {
-    const res = await axios.get('/api/employees')
+    const res = await request.get('/employees')
     employees.value = res.data
   } catch (error) {
     ElMessage.error('获取员工列表失败')
   }
 }
 
+const handleQuickFilter = (val) => {
+  const today = new Date()
+  
+  switch (val) {
+    case 'today':
+      searchForm.start_date = formatDate(today)
+      searchForm.end_date = formatDate(today)
+      break
+    case 'week':
+      const weekStart = new Date(today)
+      weekStart.setDate(today.getDate() - today.getDay() + 1)
+      searchForm.start_date = formatDate(weekStart)
+      searchForm.end_date = formatDate(today)
+      break
+    case 'month':
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+      searchForm.start_date = formatDate(monthStart)
+      searchForm.end_date = formatDate(today)
+      break
+    case 'custom':
+      break
+  }
+  pagination.page = 1
+  searchRecords()
+}
+
+const formatDate = (date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 const searchRecords = async () => {
   loading.value = true
   try {
-    const params = {}
+    const params = {
+      page: pagination.page,
+      page_size: pagination.page_size
+    }
     if (searchForm.employee_id) {
       params.employee_id = searchForm.employee_id
     }
@@ -113,9 +179,16 @@ const searchRecords = async () => {
     if (searchForm.end_date) {
       params.end_date = searchForm.end_date
     }
+    if (searchForm.status) {
+      params.status = searchForm.status
+    }
 
-    const res = await axios.get('/api/attendance/records', { params })
-    records.value = res.data
+    const res = await request.get('/attendance/records', { params })
+    tableData.value = res.data.data
+    pagination.total = res.data.total
+    pagination.page = res.data.page
+    pagination.page_size = res.data.page_size
+    pagination.total_pages = res.data.total_pages
   } catch (error) {
     ElMessage.error('获取考勤记录失败')
   } finally {
@@ -123,21 +196,35 @@ const searchRecords = async () => {
   }
 }
 
-const getStatusType = (row) => {
-  if (row.check_in && row.check_out) return 'success'
-  if (row.check_in) return 'warning'
-  return 'danger'
+const handleSizeChange = (val) => {
+  pagination.page_size = val
+  pagination.page = 1
+  searchRecords()
 }
 
-const getStatusText = (row) => {
-  if (row.check_in && row.check_out) return '已完成'
-  if (row.check_in) return '已签到'
-  return '异常'
+const handleCurrentChange = (val) => {
+  pagination.page = val
+  searchRecords()
+}
+
+const getStatusType = (status) => {
+  switch (status) {
+    case '正常':
+      return 'success'
+    case '迟到':
+      return 'warning'
+    case '早退':
+      return 'warning'
+    case '迟到早退':
+      return 'danger'
+    default:
+      return 'info'
+  }
 }
 
 onMounted(() => {
   getEmployees()
-  searchRecords()
+  handleQuickFilter('month')
 })
 </script>
 
@@ -146,6 +233,10 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.quick-filters {
+  margin-bottom: 15px;
 }
 
 .search-section {
@@ -162,7 +253,7 @@ onMounted(() => {
   color: #67c23a;
 }
 
-.text-warning {
-  color: #e6a23c;
+.text-danger {
+  color: #f56c6c;
 }
 </style>
